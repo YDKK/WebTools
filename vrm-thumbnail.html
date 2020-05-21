@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Extract thumbnail image from VRM</title>
+  <meta name="author" content="YDKK">
+  <script src="https://cdn.jsdelivr.net/npm/three@0.116.1/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.116.1/examples/js/loaders/GLTFLoader.js"></script>
+</head>
+
+<body>
+  <input id="file" type="file" accept=".vrm" />
+  <br />
+  <img id="image" />
+
+  <script>
+    let fileInput = document.getElementById('file');
+    let image = document.getElementById('image');
+    fileInput.addEventListener('change', e => {
+      let file = e.target.files[0];
+      let url = URL.createObjectURL(file);
+
+      const loader = new THREE.GLTFLoader();
+      loader.load(
+        url,
+        async (gltf) => {
+          let imageIndex = gltf.userData.gltfExtensions.VRM.meta.texture;
+          let bufferViewIndex = gltf.parser.json.images[imageIndex].bufferView;
+          let mimeType = gltf.parser.json.images[imageIndex].mimeType;
+          let buffer = (await gltf.parser.getDependencies('bufferView'))[bufferViewIndex];
+          let blob = new Blob([buffer], { type: mimeType });
+          let url = URL.createObjectURL(blob);
+          image.src = url;
+        },
+        (progress) => console.log('Loading model...', 100.0 * (progress.loaded / progress.total), '%'),
+        (error) => console.error(error)
+      );
+    });
+  </script>
+</body>
+
+</html>
