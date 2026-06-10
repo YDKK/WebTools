@@ -436,6 +436,7 @@
       function dfs(termPosition) {
         if (termPosition === nonZeroTerms.length) {
           const detailCount = increments.filter((round) => round.termIndices.length > 0).length;
+          // 4 期すべてが 1 回の決済にまとまる場合は、表示上は分割ではなく一括払いとして扱う。
           const isLumpSum = nonZeroTerms.length === 4 && detailCount === 1;
           const nextRounds = currentSplitAmounts.map((amount, index) => ({
             amount: amount + increments[index].amount,
