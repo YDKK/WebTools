@@ -233,6 +233,11 @@
         同じタイミングで払えるものは、1回のカード決済にまとめて支払う前提で最適化しています。
         手数料は eLTAX / F-REGI の公開料金表をもとに内蔵しています。
       </p>
+      <ul class="note">
+        <li>一括払いを選んだ税額は、第1回の支払いタイミングにまとめて払う前提です。</li>
+        <li>4期分割を選んだ税額は、1期〜4期ごとにその回の金額だけを払う前提です。</li>
+        <li>同じタイミングで払えるものは、1回のカード決済にまとめるほど手数料が安くなる前提で集約します。</li>
+      </ul>
     </section>
 
     <section class="panel stack">
@@ -308,6 +313,9 @@
       }
       const tier = Math.ceil(amount / 10000);
       const extraTier = tier - 1;
+      // eLTAX / F-REGI の料金表:
+      // 1〜10,000円は 40円、以降は 10,000円帯が増えるたびに 82円/83円ずつ交互に増える。
+      // これは 20,000円ごとに 165円、奇数帯でさらに 83円を足す形で表現できる。
       return 40 + Math.floor(extraTier / 2) * 165 + (extraTier % 2 === 1 ? 83 : 0);
     }
 
@@ -367,9 +375,22 @@
       return rounds.filter((round) => round.amount > 0).length;
     }
 
+    function isBetterSolution(candidate, best) {
+      if (!best) {
+        return true;
+      }
+      if (candidate.totalFee !== best.totalFee) {
+        return candidate.totalFee < best.totalFee;
+      }
+      if (candidate.usedRounds !== best.usedRounds) {
+        return candidate.usedRounds < best.usedRounds;
+      }
+      return candidate.annualCount > best.annualCount;
+    }
+
     function optimize(items) {
       if (items.length > 22) {
-        throw new Error('22件を超えると計算量が大きくなります。件数を減らして試してください。');
+        throw new Error('このページは全組み合わせ（2^n）を総当たりで計算するため、22件を超えると時間がかかりすぎます。件数を減らして試してください。');
       }
 
       const rounds = [
@@ -396,7 +417,7 @@
           modes: [...modes]
         };
 
-        if (!best || totalFee < best.totalFee || (totalFee === best.totalFee && usedRounds < best.usedRounds) || (totalFee === best.totalFee && usedRounds === best.usedRounds && annualCount > best.annualCount)) {
+        if (isBetterSolution(candidate, best)) {
           best = candidate;
           bestCount = 1;
         } else if (best && totalFee === best.totalFee && usedRounds === best.usedRounds && annualCount === best.annualCount) {
