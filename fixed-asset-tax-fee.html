@@ -229,14 +229,14 @@
         </p>
       </div>
       <p class="note">
-        前提: 一括払いは一括タイミング、分割払いは 1〜4期をどうまとめて払うかも含めて最適化します。
-        たとえば「1期と3期」+「2期と4期」のような支払い方も候補に含めます。
+        前提: 一括払いは一括タイミング、分割払いは各期の請求を物件や期をまたいで最大 4 回のカード決済にまとめる前提で最適化します。
+        たとえば「1期と3期」+「2期と4期」や、物件ごとに別の組み合わせでまとめる支払い方も候補に含めます。
         同じタイミングで払えるものは、1回のカード決済にまとめて支払う前提で最適化しています。
         手数料は eLTAX / F-REGI の公開料金表をもとに内蔵しています。
       </p>
       <ul class="note">
         <li>一括払いを選んだ税額は、一括タイミングにまとめて払う前提です。</li>
-        <li>分割払いを選んだ税額は、1期〜4期を 2〜4 回に分けて払う前提で最適化します。</li>
+        <li>分割払いを選んだ税額は、各期の請求を最大 4 回のカード決済に自由に振り分けて最適化します。</li>
         <li>同じタイミングで払えるものは、1回のカード決済にまとめるほど手数料が安くなる前提で集約します。</li>
       </ul>
     </section>
@@ -289,8 +289,8 @@
   </template>
 
   <script>
-    const MAX_ITEMS = 18;
-    const TERM_COUNT = 4;
+    const MAX_ITEMS = 16;
+    const MAX_SPLIT_PAYMENTS = 4;
     const rowsElement = document.getElementById('rows');
     const rowTemplate = document.getElementById('row-template');
     const resultElement = document.getElementById('result');
@@ -322,34 +322,6 @@
     function formatTermGroups(termGroups) {
       return termGroups.map((termGroup) => formatTermGroup(termGroup)).join(' / ');
     }
-
-    function createTermGroupPatterns(termCount) {
-      const patterns = [];
-
-      function dfs(termIndex, groups) {
-        if (termIndex === termCount) {
-          if (groups.length > 1) {
-            patterns.push(groups.map((group) => [...group]));
-          }
-          return;
-        }
-
-        for (let index = 0; index < groups.length; index += 1) {
-          groups[index].push(termIndex);
-          dfs(termIndex + 1, groups);
-          groups[index].pop();
-        }
-
-        groups.push([termIndex]);
-        dfs(termIndex + 1, groups);
-        groups.pop();
-      }
-
-      dfs(0, []);
-      return patterns;
-    }
-
-    const TERM_GROUP_PATTERNS = createTermGroupPatterns(TERM_COUNT);
 
     function calculateFee(amount) {
       if (amount <= 0) {
@@ -412,30 +384,11 @@
       return items;
     }
 
-    function cloneRounds(rounds) {
-      return rounds.map((round) => ({
-        title: round.title,
-        amount: round.amount,
-        items: round.items.map((item) => ({ ...item }))
-      }));
+    function countPositiveAmounts(amounts) {
+      return amounts.filter((amount) => amount > 0).length;
     }
 
-    function createRounds(termGroups) {
-      return [
-        { title: '一括タイミング', amount: 0, items: [] },
-        ...termGroups.map((termGroup) => ({
-          title: `${formatTermGroup(termGroup)} タイミング`,
-          amount: 0,
-          items: []
-        }))
-      ];
-    }
-
-    function countUsedRounds(rounds) {
-      return rounds.filter((round) => round.amount > 0).length;
-    }
-
-    function isBetterSolution(candidate, best) {
+    function isBetterEvaluation(candidate, best) {
       if (!best) {
         return true;
       }
@@ -448,94 +401,183 @@
       return candidate.annualCount > best.annualCount;
     }
 
-    function optimize(items) {
-      if (items.length > MAX_ITEMS) {
-        throw new Error(`このページは全組み合わせと分割タイミングの候補を総当たりで計算するため、${MAX_ITEMS}件を超えると時間がかかりすぎます。件数を減らして試してください。`);
+    function hasSameEvaluation(candidate, best) {
+      return !!best
+        && candidate.totalFee === best.totalFee
+        && candidate.usedRounds === best.usedRounds
+        && candidate.annualCount === best.annualCount;
+    }
+
+    function createEvaluation(annualAmount, splitAmounts, annualCount, count = 1) {
+      return {
+        totalFee: calculateFee(annualAmount) + splitAmounts.reduce((sum, amount) => sum + calculateFee(amount), 0),
+        usedRounds: (annualAmount > 0 ? 1 : 0) + countPositiveAmounts(splitAmounts),
+        annualCount,
+        count
+      };
+    }
+
+    function serializeState(index, annualAmount, splitAmounts) {
+      return `${index}|${annualAmount}|${splitAmounts.join(',')}`;
+    }
+
+    function generateSplitTransitions(currentSplitAmounts, quarters) {
+      const nonZeroTerms = quarters
+        .map((amount, index) => ({ amount, index }))
+        .filter((term) => term.amount > 0);
+      const increments = Array.from({ length: MAX_SPLIT_PAYMENTS }, () => ({ amount: 0, termIndices: [] }));
+      const transitions = new Map();
+
+      function dfs(termPosition) {
+        if (termPosition === nonZeroTerms.length) {
+          const nextRounds = currentSplitAmounts.map((amount, index) => ({
+            amount: amount + increments[index].amount,
+            fromIndex: index,
+            termIndices: [...increments[index].termIndices]
+          }));
+          const ordered = nextRounds
+            .slice()
+            .sort((left, right) => right.amount - left.amount || left.fromIndex - right.fromIndex);
+          const nextAmounts = ordered.map((round) => round.amount);
+          const key = nextAmounts.join(',');
+          if (!transitions.has(key)) {
+            transitions.set(key, { nextAmounts, ordered });
+          }
+          return;
+        }
+
+        const term = nonZeroTerms[termPosition];
+        const seenTargets = new Set();
+        for (let index = 0; index < MAX_SPLIT_PAYMENTS; index += 1) {
+          const signature = currentSplitAmounts[index] + increments[index].amount;
+          if (seenTargets.has(signature)) {
+            continue;
+          }
+          seenTargets.add(signature);
+          increments[index].amount += term.amount;
+          increments[index].termIndices.push(term.index);
+          dfs(termPosition + 1);
+          increments[index].amount -= term.amount;
+          increments[index].termIndices.pop();
+        }
       }
 
-      let best = null;
-      let bestCount = 0;
+      dfs(0);
+      return [...transitions.values()];
+    }
 
-      TERM_GROUP_PATTERNS.forEach((termGroups) => {
-        const rounds = createRounds(termGroups);
-        const modes = [];
+    function findBestArrangement(items, splitOnly = false) {
+      if (items.length > MAX_ITEMS) {
+        throw new Error(`このページは一括・分割の組み合わせと分割払いのまとめ方を総当たりで計算するため、${MAX_ITEMS}件を超えると時間がかかりすぎます。件数を減らして試してください。`);
+      }
 
-        function saveResult() {
-          const fees = rounds.map((round) => calculateFee(round.amount));
-          const totalFee = fees.reduce((sum, fee) => sum + fee, 0);
-          const usedRounds = countUsedRounds(rounds);
-          const annualCount = modes.filter((mode) => mode === 'annual').length;
-          const candidate = {
-            totalFee,
-            usedRounds,
-            annualCount,
-            fees,
-            rounds: cloneRounds(rounds),
-            modes: [...modes],
-            termGroups: termGroups.map((termGroup) => [...termGroup])
-          };
+      const memo = new Map();
 
-          if (isBetterSolution(candidate, best)) {
+      function solve(index, annualAmount, splitAmounts) {
+        const key = serializeState(index, annualAmount, splitAmounts);
+        if (memo.has(key)) {
+          return memo.get(key);
+        }
+
+        if (index === items.length) {
+          const evaluation = createEvaluation(annualAmount, splitAmounts, 0, 1);
+          memo.set(key, evaluation);
+          return evaluation;
+        }
+
+        const item = items[index];
+        let best = null;
+
+        function consider(candidate) {
+          if (isBetterEvaluation(candidate, best)) {
             best = candidate;
-            bestCount = 1;
-          } else if (best && totalFee === best.totalFee && usedRounds === best.usedRounds && annualCount === best.annualCount) {
-            bestCount += 1;
+          } else if (hasSameEvaluation(candidate, best)) {
+            best = { ...best, count: best.count + candidate.count };
           }
         }
 
-        function chooseAnnual(item) {
-          rounds[0].amount += item.total;
-          rounds[0].items.push({ label: item.label, mode: '一括', amount: item.total });
-        }
-
-        function undoAnnual(item) {
-          rounds[0].amount -= item.total;
-          rounds[0].items.pop();
-        }
-
-        function chooseSplit(item) {
-          termGroups.forEach((termGroup, groupIndex) => {
-            const amount = termGroup.reduce((sum, termIndex) => sum + item.quarters[termIndex], 0);
-            if (amount > 0) {
-              rounds[groupIndex + 1].amount += amount;
-              rounds[groupIndex + 1].items.push({ label: item.label, mode: formatTermGroup(termGroup), amount });
-            }
+        if (!splitOnly) {
+          const annualNext = solve(index + 1, annualAmount + item.total, splitAmounts);
+          consider({
+            ...annualNext,
+            annualCount: annualNext.annualCount + 1,
+            count: annualNext.count
           });
         }
 
-        function undoSplit(item) {
-          for (let groupIndex = termGroups.length - 1; groupIndex >= 0; groupIndex -= 1) {
-            const termGroup = termGroups[groupIndex];
-            const amount = termGroup.reduce((sum, termIndex) => sum + item.quarters[termIndex], 0);
-            if (amount > 0) {
-              rounds[groupIndex + 1].amount -= amount;
-              rounds[groupIndex + 1].items.pop();
-            }
-          }
-        }
+        generateSplitTransitions(splitAmounts, item.quarters).forEach(({ nextAmounts }) => {
+          const splitNext = solve(index + 1, annualAmount, nextAmounts);
+          consider({ ...splitNext });
+        });
 
-        function dfs(index) {
-          if (index === items.length) {
-            saveResult();
-            return;
-          }
+        memo.set(key, best);
+        return best;
+      }
+
+      function buildRounds() {
+        const annualRound = { title: '一括タイミング', amount: 0, items: [] };
+        let splitRounds = Array.from({ length: MAX_SPLIT_PAYMENTS }, () => ({ amount: 0, items: [] }));
+        const modes = [];
+
+        for (let index = 0; index < items.length; index += 1) {
+          const current = solve(index, annualRound.amount, splitRounds.map((round) => round.amount));
           const item = items[index];
 
-          modes[index] = 'annual';
-          chooseAnnual(item);
-          dfs(index + 1);
-          undoAnnual(item);
+          if (!splitOnly) {
+            const annualNext = solve(index + 1, annualRound.amount + item.total, splitRounds.map((round) => round.amount));
+            const annualCandidate = {
+              ...annualNext,
+              annualCount: annualNext.annualCount + 1,
+              count: annualNext.count
+            };
+            if (hasSameEvaluation(annualCandidate, current)) {
+              annualRound.amount += item.total;
+              annualRound.items.push({ label: item.label, mode: '一括', amount: item.total });
+              modes.push('annual');
+              continue;
+            }
+          }
 
-          modes[index] = 'split';
-          chooseSplit(item);
-          dfs(index + 1);
-          undoSplit(item);
+          const transitions = generateSplitTransitions(splitRounds.map((round) => round.amount), item.quarters);
+          const selected = transitions.find(({ nextAmounts }) => {
+            const splitCandidate = solve(index + 1, annualRound.amount, nextAmounts);
+            return hasSameEvaluation(splitCandidate, current);
+          });
+
+          if (!selected) {
+            throw new Error('分割払いの組み合わせを復元できませんでした。');
+          }
+
+          splitRounds = selected.ordered.map((round) => {
+            const nextRound = {
+              amount: round.amount,
+              items: splitRounds[round.fromIndex].items.map((entry) => ({ ...entry }))
+            };
+            if (round.termIndices.length > 0) {
+              nextRound.items.push({
+                label: item.label,
+                mode: formatTermGroup(round.termIndices),
+                amount: round.termIndices.reduce((sum, termIndex) => sum + item.quarters[termIndex], 0)
+              });
+            }
+            return nextRound;
+          });
+          modes.push('split');
         }
 
-        dfs(0);
-      });
+        splitRounds = splitRounds.map((round, index) => ({
+          title: `分割払い ${index + 1}回目`,
+          amount: round.amount,
+          items: round.items
+        }));
 
-      return { best, bestCount };
+        return { annualRound, splitRounds, modes };
+      }
+
+      return {
+        best: solve(0, 0, Array(MAX_SPLIT_PAYMENTS).fill(0)),
+        ...buildRounds()
+      };
     }
 
     function evaluateAllAnnual(items) {
@@ -544,37 +586,24 @@
     }
 
     function evaluateAllSplit(items) {
-      let best = null;
+      return findBestArrangement(items, true).best;
+    }
 
-      TERM_GROUP_PATTERNS.forEach((termGroups) => {
-        const rounds = termGroups.map((termGroup) => items.reduce(
-          (sum, item) => sum + termGroup.reduce((groupSum, termIndex) => groupSum + item.quarters[termIndex], 0),
-          0
-        ));
-        const totalFee = rounds.reduce((sum, amount) => sum + calculateFee(amount), 0);
-
-        if (!best || totalFee < best.totalFee) {
-          best = {
-            totalFee,
-            termGroups: termGroups.map((termGroup) => [...termGroup])
-          };
-        }
-      });
-
-      return best;
+    function optimize(items) {
+      return findBestArrangement(items, false);
     }
 
     function renderResult(items, result) {
-      const { best, bestCount } = result;
-      const displayedBestCount = best.annualCount === items.length ? 1 : bestCount;
+      const { best, annualRound, splitRounds, modes } = result;
+      const displayedBestCount = best.annualCount === items.length ? 1 : best.count;
       const allAnnualFee = evaluateAllAnnual(items);
       const allSplit = evaluateAllSplit(items);
       const savings = Math.min(allAnnualFee, allSplit.totalFee) - best.totalFee;
-      const splitSummary = formatTermGroups(best.termGroups);
-      const hasSplit = best.modes.includes('split');
+      const hasSplit = modes.includes('split');
+      const paymentRounds = [annualRound, ...splitRounds];
 
-      const modeLines = items.map((item, index) => `<li><strong>${item.label}</strong>: ${best.modes[index] === 'annual' ? '一括払い' : '分割払い'}</li>`).join('');
-      const paymentCards = best.rounds.map((round) => {
+      const modeLines = items.map((item, index) => `<li><strong>${item.label}</strong>: ${modes[index] === 'annual' ? '一括払い' : '分割払い'}</li>`).join('');
+      const paymentCards = paymentRounds.map((round) => {
         if (round.amount <= 0) {
           return `<div class="payment-card"><h3>${round.title}</h3><p class="small">支払いなし</p></div>`;
         }
@@ -623,18 +652,18 @@
             <div class="scenario-card">
               <div class="small">全部を分割払いにした場合</div>
               <strong>${formatYen(allSplit.totalFee)}</strong>
-              <div class="small">${formatTermGroups(allSplit.termGroups)}</div>
+              <div class="small">${allSplit.usedRounds} 回に集約</div>
             </div>
           </div>
 
           <div>
             <h3>おすすめの組み合わせ</h3>
             <ul>${modeLines}</ul>
-            ${hasSplit ? `<p class="small">分割払いのまとめ方: ${splitSummary}</p>` : ''}
+            ${hasSplit ? '<p class="small">分割払いの請求は、期や物件をまたいでまとめて最適化しています。</p>' : ''}
           </div>
 
           <div>
-            <h3>各タイミングでまとめて払う内容</h3>
+            <h3>カード決済ごとにまとめて払う内容</h3>
             <div class="payment-grid">${paymentCards}</div>
           </div>
         </section>
