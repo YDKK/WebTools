@@ -447,8 +447,14 @@
             .sort((left, right) => right.amount - left.amount || left.fromIndex - right.fromIndex);
           const nextAmounts = ordered.map((round) => round.amount);
           const key = nextAmounts.join(',');
-          if (!transitions.has(key)) {
-            transitions.set(key, { nextAmounts, ordered, detailCount, isLumpSum });
+          const candidate = { nextAmounts, ordered, detailCount, isLumpSum };
+          const existing = transitions.get(key);
+          if (
+            !existing
+            || candidate.detailCount < existing.detailCount
+            || (candidate.detailCount === existing.detailCount && candidate.isLumpSum && !existing.isLumpSum)
+          ) {
+            transitions.set(key, candidate);
           }
           return;
         }
