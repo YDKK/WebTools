@@ -395,6 +395,9 @@
       if (candidate.totalFee !== best.totalFee) {
         return candidate.totalFee < best.totalFee;
       }
+      if (candidate.detailCount !== best.detailCount) {
+        return candidate.detailCount < best.detailCount;
+      }
       if (candidate.usedRounds !== best.usedRounds) {
         return candidate.usedRounds < best.usedRounds;
       }
@@ -404,15 +407,17 @@
     function hasSameEvaluation(candidate, best) {
       return !!best
         && candidate.totalFee === best.totalFee
+        && candidate.detailCount === best.detailCount
         && candidate.usedRounds === best.usedRounds
         && candidate.annualCount === best.annualCount;
     }
 
-    function createEvaluation(annualAmount, splitAmounts, annualCount, count = 1) {
+    function createEvaluation(annualAmount, splitAmounts, count = 1) {
       return {
         totalFee: calculateFee(annualAmount) + splitAmounts.reduce((sum, amount) => sum + calculateFee(amount), 0),
         usedRounds: (annualAmount > 0 ? 1 : 0) + countPositiveAmounts(splitAmounts),
-        annualCount,
+        annualCount: 0,
+        detailCount: 0,
         count
       };
     }
@@ -430,6 +435,8 @@
 
       function dfs(termPosition) {
         if (termPosition === nonZeroTerms.length) {
+          const detailCount = increments.filter((round) => round.termIndices.length > 0).length;
+          const isLumpSum = nonZeroTerms.length === 4 && detailCount === 1;
           const nextRounds = currentSplitAmounts.map((amount, index) => ({
             amount: amount + increments[index].amount,
             fromIndex: index,
@@ -441,7 +448,7 @@
           const nextAmounts = ordered.map((round) => round.amount);
           const key = nextAmounts.join(',');
           if (!transitions.has(key)) {
-            transitions.set(key, { nextAmounts, ordered });
+            transitions.set(key, { nextAmounts, ordered, detailCount, isLumpSum });
           }
           return;
         }
@@ -480,7 +487,7 @@
         }
 
         if (index === items.length) {
-          const evaluation = createEvaluation(annualAmount, splitAmounts, 0, 1);
+          const evaluation = createEvaluation(annualAmount, splitAmounts, 1);
           memo.set(key, evaluation);
           return evaluation;
         }
@@ -501,13 +508,18 @@
           consider({
             ...annualNext,
             annualCount: annualNext.annualCount + 1,
+            detailCount: annualNext.detailCount + 1,
             count: annualNext.count
           });
         }
 
-        generateSplitTransitions(splitAmounts, item.quarters).forEach(({ nextAmounts }) => {
+        generateSplitTransitions(splitAmounts, item.quarters).forEach(({ nextAmounts, detailCount, isLumpSum }) => {
           const splitNext = solve(index + 1, annualAmount, nextAmounts);
-          consider({ ...splitNext });
+          consider({
+            ...splitNext,
+            annualCount: splitNext.annualCount + (isLumpSum ? 1 : 0),
+            detailCount: splitNext.detailCount + detailCount
+          });
         });
 
         memo.set(key, best);
@@ -528,6 +540,7 @@
             const annualCandidate = {
               ...annualNext,
               annualCount: annualNext.annualCount + 1,
+              detailCount: annualNext.detailCount + 1,
               count: annualNext.count
             };
             if (hasSameEvaluation(annualCandidate, current)) {
@@ -539,9 +552,13 @@
           }
 
           const transitions = generateSplitTransitions(splitRounds.map((round) => round.amount), item.quarters);
-          const selected = transitions.find(({ nextAmounts }) => {
+          const selected = transitions.find(({ nextAmounts, detailCount, isLumpSum }) => {
             const splitCandidate = solve(index + 1, annualRound.amount, nextAmounts);
-            return hasSameEvaluation(splitCandidate, current);
+            return hasSameEvaluation({
+              ...splitCandidate,
+              annualCount: splitCandidate.annualCount + (isLumpSum ? 1 : 0),
+              detailCount: splitCandidate.detailCount + detailCount
+            }, current);
           });
 
           if (!selected) {
@@ -556,13 +573,13 @@
             if (round.termIndices.length > 0) {
               nextRound.items.push({
                 label: item.label,
-                mode: formatTermGroup(round.termIndices),
+                mode: selected.isLumpSum ? '一括' : formatTermGroup(round.termIndices),
                 amount: round.termIndices.reduce((sum, termIndex) => sum + item.quarters[termIndex], 0)
               });
             }
             return nextRound;
           });
-          modes.push('split');
+          modes.push(selected.isLumpSum ? 'annual' : 'split');
         }
 
         splitRounds = splitRounds.map((round, index) => ({
